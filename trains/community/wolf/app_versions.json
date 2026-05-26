@@ -1,0 +1,45 @@
+{
+  "1.0.0": {
+    "healthy": true,
+    "supported": true,
+    "healthy_error": null,
+    "location": "trains/community/wolf/1.0.0",
+    "last_update": "2026-05-26 00:00:00",
+    "required_features": [],
+    "human_version": "stable_1.0.0",
+    "version": "1.0.0",
+    "chart_metadata": {
+      "name": "wolf",
+      "description": "Wolf game streaming server — stream games to Moonlight and other GameStream clients with GPU acceleration.",
+      "home": "https://games-on-whales.github.io/wolf/stable",
+      "icon": "https://avatars.githubusercontent.com/u/73881782",
+      "keywords": [
+        "gaming",
+        "game-streaming",
+        "moonlight",
+        "nvidia",
+        "amd",
+        "intel",
+        "gpu",
+        "gamestream"
+      ],
+      "sources": [
+        "https://github.com/games-on-whales/wolf",
+        "https://ghcr.io/games-on-whales/wolf"
+      ],
+      "version": "1.0.0",
+      "app_version": "stable",
+      "maintainers": [
+        {
+          "name": "TrueNAS Community",
+          "email": "community@truenas.org",
+          "url": "https://www.truenas.com/"
+        }
+      ],
+      "annotations": {
+        "min_scale_version": "24.10.0",
+        "max_scale_version": null
+      }
+    }
+  }
+}

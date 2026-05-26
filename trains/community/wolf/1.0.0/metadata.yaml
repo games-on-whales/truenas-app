@@ -1,0 +1,48 @@
+app_version: stable
+capabilities:
+  - description: >
+      Wolf requires privileged container access to manage GPU devices, virtual
+      input devices (uinput), and per-session game containers via the Docker socket.
+    name: PRIVILEGED
+categories:
+  - gaming
+  - media
+description: >
+  Wolf is an open-source game streaming server that streams games from your
+  TrueNAS server to any Moonlight-compatible client. It supports NVIDIA, AMD,
+  and Intel GPU acceleration for video encoding, creates virtual displays and
+  audio outputs per session, and manages gamepad/keyboard/mouse passthrough.
+home: https://games-on-whales.github.io/wolf/stable
+host_mounts:
+  - description: Docker socket — Wolf spawns per-session game containers
+    host_path: /var/run/docker.sock
+  - description: Shared IPC sockets between Wolf and virtual display/audio services
+    host_path: /tmp/sockets
+  - description: Device nodes (GPU, input, DRM) required for hardware encoding and virtual input
+    host_path: /dev
+icon: https://avatars.githubusercontent.com/u/73881782
+keywords:
+  - gaming
+  - game-streaming
+  - moonlight
+  - gpu
+  - nvidia
+  - amd
+  - intel
+  - streaming
+  - gamestream
+lib_version: "2.1.34"
+lib_version_hash: ""
+maintainers:
+  - email: community@truenas.org
+    name: TrueNAS Community
+    url: https://www.truenas.com/
+name: wolf
+run_as_context: []
+screenshots: []
+sources:
+  - https://github.com/games-on-whales/wolf
+  - https://ghcr.io/games-on-whales/wolf
+title: Wolf
+train: community
+version: 1.0.0

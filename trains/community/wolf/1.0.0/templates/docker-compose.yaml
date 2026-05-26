@@ -1,0 +1,126 @@
+---
+# Wolf game streaming server — TrueNAS SCALE app template
+# Rendered values come from questions.yaml via the TrueNAS app framework.
+# Reference: https://games-on-whales.github.io/wolf/stable
+
+{% set wolf_cfg = values.wolfConfig %}
+{% set gpu = values.gpuConfig %}
+{% set net = values.network %}
+{% set storage = values.storage.wolfConfig %}
+{% set adv = values.advanced %}
+
+name: wolf
+
+services:
+  wolf:
+    image: ghcr.io/games-on-whales/wolf:stable
+    restart: unless-stopped
+
+    # Wolf must be privileged: it creates virtual display/audio outputs,
+    # virtual input devices via uinput, and manages cgroups for game containers.
+    privileged: true
+
+    {% if net.hostNetwork %}
+    network_mode: host
+    {% else %}
+    ports:
+      # Moonlight discovery
+      - "{{ net.httpsPort }}:47984/tcp"
+      - "{{ net.httpPort }}:47989/tcp"
+      # RTSP session negotiation
+      - "{{ net.rtspPort }}:48010/tcp"
+      - "{{ net.rtspPort }}:48010/udp"
+      # Video / audio / control streams
+      - "{{ net.videoPort }}:47998/udp"
+      - "{{ net.controlPort }}:47999/udp"
+      - "{{ net.audioPort }}:48000/udp"
+      - "{{ net.controlPort2 }}:48002/udp"
+      # Wolf Web UI
+      - "{{ net.webPort }}:47990/tcp"
+    {% endif %}
+
+    environment:
+      TZ: "{{ wolf_cfg.timezone }}"
+      WOLF_LOG_LEVEL: "{{ wolf_cfg.logLevel }}"
+      # Wolf uses this directory for PulseAudio/PipeWire sockets shared
+      # between the main service and per-session virtual display containers.
+      XDG_RUNTIME_DIR: /tmp/sockets
+
+      {% if gpu.gpuVendor == "nvidia" %}
+      # NVIDIA runtime — expose GPU and all driver capabilities to Wolf so it
+      # can use NVENC for hardware encoding and CUDA for rendering.
+      NVIDIA_VISIBLE_DEVICES: "{{ gpu.nvidiaVisibleDevices }}"
+      NVIDIA_DRIVER_CAPABILITIES: "{{ gpu.nvidiaDriverCapabilities }}"
+      {% endif %}
+
+      {% for env in adv.additionalEnv %}
+      {{ env.name }}: "{{ env.value }}"
+      {% endfor %}
+
+    volumes:
+      # Wolf config: certificates, paired clients, app definitions (config.toml)
+      {% if storage.type == "ixVolume" %}
+      - type: volume
+        source: wolf_config
+        target: /etc/wolf
+      {% else %}
+      - type: bind
+        source: "{{ storage.hostPathConfig.hostPath }}"
+        target: /etc/wolf
+      {% endif %}
+
+      # Shared IPC sockets: Wolf writes PulseAudio/PipeWire socket files here;
+      # per-session game containers mount the same path to use them.
+      - type: bind
+        source: /tmp/sockets
+        target: /tmp/sockets
+        bind:
+          create_host_path: true
+
+      # Full /dev passthrough: Wolf dynamically creates DRM/DRI lease handles,
+      # reads /dev/input/event* for real input, and writes /dev/uinput for
+      # virtual devices. A static device list cannot cover all runtime paths.
+      - type: bind
+        source: /dev
+        target: /dev
+
+      {% if adv.exposeDockerSocket %}
+      # Docker socket: Wolf starts and stops a Docker container for each
+      # streaming session (virtual display, audio, and game process).
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      {% endif %}
+
+    devices:
+      # DRI nodes for GPU rendering and VAAPI/hardware encode (AMD, Intel, and
+      # the render node used by NVENC via the NVIDIA container runtime).
+      - /dev/dri
+
+      # uinput: Wolf writes here to create virtual gamepads, keyboards, and
+      # mice that the game sees as real hardware.
+      - /dev/uinput
+
+    device_cgroup_rules:
+      # Allow read/write/mknod on char devices major 13 (Linux input subsystem).
+      # Wolf creates /dev/input/eventN nodes at runtime for virtual devices.
+      - "c 13:* rmw"
+
+    {% if gpu.gpuVendor == "nvidia" %}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu, video, utility]
+    {% endif %}
+
+volumes:
+  {% if storage.type == "ixVolume" %}
+  wolf_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "{{ ix_volumes[storage.ixVolumeConfig.datasetName] }}"
+  {% endif %}
