@@ -1,13 +1,12 @@
 ---
 # Wolf game streaming server — TrueNAS SCALE app template
-# Rendered values come from questions.yaml via the TrueNAS app framework.
 # Reference: https://games-on-whales.github.io/wolf/stable
 
 {% set wolf_cfg = values.wolfConfig %}
-{% set gpu = values.gpuConfig %}
-{% set net = values.network %}
-{% set storage = values.storage.wolfConfig %}
-{% set adv = values.advanced %}
+{% set wolf_den = values.wolfDen %}
+{% set gpu      = values.gpuConfig %}
+{% set storage  = values.storage %}
+{% set adv      = values.advanced %}
 
 name: wolf
 
@@ -16,39 +15,21 @@ services:
     image: ghcr.io/games-on-whales/wolf:stable
     restart: unless-stopped
 
-    # Wolf must be privileged: it creates virtual display/audio outputs,
-    # virtual input devices via uinput, and manages cgroups for game containers.
+    # Wolf manages per-session game containers and creates virtual devices;
+    # privileged + host network are both required.
     privileged: true
-
-    {% if net.hostNetwork %}
     network_mode: host
-    {% else %}
-    ports:
-      # Moonlight discovery
-      - "{{ net.httpsPort }}:47984/tcp"
-      - "{{ net.httpPort }}:47989/tcp"
-      # RTSP session negotiation
-      - "{{ net.rtspPort }}:48010/tcp"
-      - "{{ net.rtspPort }}:48010/udp"
-      # Video / audio / control streams
-      - "{{ net.videoPort }}:47998/udp"
-      - "{{ net.controlPort }}:47999/udp"
-      - "{{ net.audioPort }}:48000/udp"
-      - "{{ net.controlPort2 }}:48002/udp"
-      # Wolf Web UI
-      - "{{ net.webPort }}:47990/tcp"
-    {% endif %}
 
     environment:
-      TZ: "{{ wolf_cfg.timezone }}"
-      WOLF_LOG_LEVEL: "{{ wolf_cfg.logLevel }}"
-      # Wolf uses this directory for PulseAudio/PipeWire sockets shared
-      # between the main service and per-session virtual display containers.
       XDG_RUNTIME_DIR: /tmp/sockets
+      WOLF_CFG_FILE: /etc/wolf/cfg/config.toml
+      WOLF_DOCKER_SOCKET: /var/run/docker.sock
+      WOLF_RENDER_NODE: "{{ wolf_cfg.renderNode }}"
+      TZ: "{{ wolf_cfg.timezone }}"
 
       {% if gpu.gpuVendor == "nvidia" %}
-      # NVIDIA runtime — expose GPU and all driver capabilities to Wolf so it
-      # can use NVENC for hardware encoding and CUDA for rendering.
+      # NVIDIA container runtime — exposes GPU for NVENC encoding.
+      NVIDIA_DRIVER_VOLUME_NAME: nvidia-driver-vol
       NVIDIA_VISIBLE_DEVICES: "{{ gpu.nvidiaVisibleDevices }}"
       NVIDIA_DRIVER_CAPABILITIES: "{{ gpu.nvidiaDriverCapabilities }}"
       {% endif %}
@@ -58,52 +39,72 @@ services:
       {% endfor %}
 
     volumes:
-      # Wolf config: certificates, paired clients, app definitions (config.toml)
-      {% if storage.type == "ixVolume" %}
+      # Wolf config: config.toml, TLS certs, paired client records
+      {% if storage.cfg.type == "ixVolume" %}
       - type: volume
-        source: wolf_config
-        target: /etc/wolf
+        source: wolf_cfg
+        target: /etc/wolf/cfg
       {% else %}
       - type: bind
-        source: "{{ storage.hostPathConfig.hostPath }}"
-        target: /etc/wolf
+        source: "{{ storage.cfg.hostPathConfig.hostPath }}"
+        target: /etc/wolf/cfg
       {% endif %}
 
-      # Shared IPC sockets: Wolf writes PulseAudio/PipeWire socket files here;
-      # per-session game containers mount the same path to use them.
+      # Steam library metadata and per-app state
+      {% if storage.steam.type == "ixVolume" %}
+      - type: volume
+        source: wolf_steam
+        target: /etc/wolf/steam
+      {% else %}
       - type: bind
-        source: /tmp/sockets
-        target: /tmp/sockets
-        bind:
-          create_host_path: true
+        source: "{{ storage.steam.hostPathConfig.hostPath }}"
+        target: /etc/wolf/steam
+      {% endif %}
 
-      # Full /dev passthrough: Wolf dynamically creates DRM/DRI lease handles,
-      # reads /dev/input/event* for real input, and writes /dev/uinput for
-      # virtual devices. A static device list cannot cover all runtime paths.
+      # Docker socket: Wolf spawns a container per streaming session
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+
+      # Full /dev: Wolf creates DRM leases and virtual input nodes at runtime
       - type: bind
         source: /dev
         target: /dev
 
-      {% if adv.exposeDockerSocket %}
-      # Docker socket: Wolf starts and stops a Docker container for each
-      # streaming session (virtual display, audio, and game process).
+      # udev: Wolf monitors device add/remove for hotplug support
       - type: bind
-        source: /var/run/docker.sock
-        target: /var/run/docker.sock
+        source: /run/udev
+        target: /run/udev
+        read_only: true
+
+      # Shared IPC: Wolf writes wolf.sock here; Wolf Den reads it
+      - type: volume
+        source: wolf_socket
+        target: /tmp/sockets
+
+      {% if gpu.gpuVendor == "nvidia" %}
+      # Pre-built NVIDIA userspace libraries (see NVIDIA note in app-readme.md)
+      - type: volume
+        source: nvidia_driver_vol
+        target: /usr/nvidia
       {% endif %}
 
     devices:
-      # DRI nodes for GPU rendering and VAAPI/hardware encode (AMD, Intel, and
-      # the render node used by NVENC via the NVIDIA container runtime).
-      - /dev/dri
-
-      # uinput: Wolf writes here to create virtual gamepads, keyboards, and
-      # mice that the game sees as real hardware.
-      - /dev/uinput
+      - /dev/dri     # GPU render nodes (all vendors)
+      - /dev/uinput  # Virtual gamepad/keyboard/mouse creation
+      - /dev/uhid    # HID-over-USB virtual devices
+      {% if gpu.gpuVendor == "nvidia" %}
+      - /dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools
+      - /dev/nvidia-caps/nvidia-cap1
+      - /dev/nvidia-caps/nvidia-cap2
+      - /dev/nvidiactl
+      - /dev/nvidia0
+      - /dev/nvidia-modeset
+      {% endif %}
 
     device_cgroup_rules:
-      # Allow read/write/mknod on char devices major 13 (Linux input subsystem).
-      # Wolf creates /dev/input/eventN nodes at runtime for virtual devices.
+      # Wolf mknods /dev/input/eventN for each virtual input device at runtime
       - "c 13:* rmw"
 
     {% if gpu.gpuVendor == "nvidia" %}
@@ -115,12 +116,98 @@ services:
               capabilities: [gpu, video, utility]
     {% endif %}
 
+  {% if wolf_den.enabled %}
+  wolf-den:
+    image: ghcr.io/games-on-whales/wolf-den:stable
+    restart: unless-stopped
+    depends_on:
+      - wolf
+
+    # Wolf Den uses bridge networking with a single exposed port.
+    # It talks to Wolf via the wolf_socket Unix socket volume, not TCP.
+    ports:
+      - "{{ wolf_den.port }}:8080/tcp"
+
+    environment:
+      TZ: "{{ wolf_cfg.timezone }}"
+      WOLF_SOCKET_PATH: /tmp/sockets/wolf.sock
+      WOLF_SOCKET_TIMEOUT: "{{ wolf_den.socketTimeout }}"
+
+    volumes:
+      # Unix socket shared with Wolf (wolf.sock is created by Wolf on startup)
+      - type: volume
+        source: wolf_socket
+        target: /tmp/sockets
+
+      # Wolf Den persistent state: session database, user settings
+      {% if storage.wolfDen.type == "ixVolume" %}
+      - type: volume
+        source: wolf_den_data
+        target: /app/wolf-den
+      {% else %}
+      - type: bind
+        source: "{{ storage.wolfDen.hostPathConfig.hostPath }}"
+        target: /app/wolf-den
+      {% endif %}
+
+      # Game cover art (shared with Wolf)
+      {% if storage.covers.type == "ixVolume" %}
+      - type: volume
+        source: wolf_covers
+        target: /etc/wolf/covers
+      {% else %}
+      - type: bind
+        source: "{{ storage.covers.hostPathConfig.hostPath }}"
+        target: /etc/wolf/covers
+      {% endif %}
+  {% endif %}
+
 volumes:
-  {% if storage.type == "ixVolume" %}
-  wolf_config:
+  # Ephemeral named volume for the Wolf Unix socket; recreated each run
+  wolf_socket: {}
+
+  {% if storage.cfg.type == "ixVolume" %}
+  wolf_cfg:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: "{{ ix_volumes[storage.ixVolumeConfig.datasetName] }}"
+      device: "{{ ix_volumes[storage.cfg.ixVolumeConfig.datasetName] }}"
+  {% endif %}
+
+  {% if storage.steam.type == "ixVolume" %}
+  wolf_steam:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "{{ ix_volumes[storage.steam.ixVolumeConfig.datasetName] }}"
+  {% endif %}
+
+  {% if wolf_den.enabled %}
+  {% if storage.wolfDen.type == "ixVolume" %}
+  wolf_den_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "{{ ix_volumes[storage.wolfDen.ixVolumeConfig.datasetName] }}"
+  {% endif %}
+  {% if storage.covers.type == "ixVolume" %}
+  wolf_covers:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "{{ ix_volumes[storage.covers.ixVolumeConfig.datasetName] }}"
+  {% endif %}
+  {% endif %}
+
+  {% if gpu.gpuVendor == "nvidia" %}
+  # External volume — must exist before deploying this app. The NVIDIA plugin
+  # for TrueNAS or a manual 'docker volume create nvidia-driver-vol' will
+  # populate it with the matching userspace driver libraries.
+  nvidia_driver_vol:
+    external: true
+    name: nvidia-driver-vol
   {% endif %}

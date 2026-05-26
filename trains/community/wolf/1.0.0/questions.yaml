@@ -1,19 +1,23 @@
 groups:
   - name: Wolf Configuration
     description: Core Wolf game streaming server settings.
-  - name: GPU Configuration
-    description: GPU vendor and driver settings for hardware-accelerated video encoding.
-  - name: Network Configuration
+  - name: Wolf Den Configuration
     description: >
-      Configure how Wolf is reachable on your network. Host networking is
-      recommended for lowest latency. If you use port mapping, ensure all
-      listed ports are forwarded through your router for remote access.
+      Wolf Den is the web management dashboard for Wolf. It communicates with
+      Wolf via a Unix socket (not HTTP) and provides pairing, session monitoring,
+      and app management. Enabled by default on port 8080.
+  - name: GPU Configuration
+    description: >
+      GPU vendor and render node for hardware-accelerated video encoding.
+      NVIDIA users must also ensure the nvidia-driver-vol Docker volume exists
+      before deploying (see app-readme.md).
   - name: Storage Configuration
     description: >
-      Persistent storage for Wolf's configuration directory (/etc/wolf).
-      Paired clients, certificates, and app definitions are stored here.
+      Persistent storage for Wolf's configuration, Steam data, Wolf Den state,
+      and game cover art. Each is a separate volume so they can be managed
+      and backed up independently.
   - name: Advanced Configuration
-    description: Additional environment variables and low-level options.
+    description: Extra environment variables passed to the Wolf container.
 
 portals:
   web_portal:
@@ -22,7 +26,7 @@ portals:
     host:
       - $node_ip
     ports:
-      - $variable-network.webPort
+      - $variable-wolfDen.port
     path: /
 
 questions:
@@ -34,21 +38,16 @@ questions:
     schema:
       type: dict
       attrs:
-        - variable: logLevel
-          label: Log Level
-          description: Verbosity of Wolf's log output.
+        - variable: renderNode
+          label: GPU Render Node
+          description: >
+            DRI render device that Wolf uses for GPU encoding and display.
+            Run 'ls /dev/dri/' on the TrueNAS host to find the right node.
+            Usually /dev/dri/renderD128 for the first GPU.
           schema:
             type: string
-            default: INFO
-            enum:
-              - value: DEBUG
-                description: Debug — verbose, useful for troubleshooting
-              - value: INFO
-                description: Info — recommended for normal operation
-              - value: WARNING
-                description: Warning — only notable events
-              - value: ERROR
-                description: Error — failures only
+            default: /dev/dri/renderD128
+            required: true
 
         - variable: timezone
           label: Timezone
@@ -58,6 +57,48 @@ questions:
           schema:
             type: string
             default: UTC
+
+  # ─── Wolf Den Configuration ──────────────────────────────────────────────
+
+  - variable: wolfDen
+    group: Wolf Den Configuration
+    label: Wolf Den Configuration
+    schema:
+      type: dict
+      attrs:
+        - variable: enabled
+          label: Enable Wolf Den
+          description: >
+            Run the Wolf Den management dashboard alongside Wolf. Wolf Den
+            communicates with Wolf via a Unix socket; no HTTP API access is
+            needed. Disable only if you manage Wolf entirely via config files.
+          schema:
+            type: boolean
+            default: true
+
+        - variable: port
+          label: Wolf Den Port
+          description: >
+            Host port for the Wolf Den web UI. This is also the port used for
+            the TrueNAS app portal link.
+          schema:
+            type: int
+            default: 8080
+            min: 1024
+            max: 65535
+            show_if: [["enabled", "=", true]]
+
+        - variable: socketTimeout
+          label: Socket Connection Timeout (seconds)
+          description: >
+            How long Wolf Den waits for Wolf's Unix socket to become available
+            on startup. Increase if Wolf takes a long time to initialise.
+          schema:
+            type: int
+            default: 60
+            min: 10
+            max: 300
+            show_if: [["enabled", "=", true]]
 
   # ─── GPU Configuration ────────────────────────────────────────────────────
 
@@ -79,13 +120,11 @@ questions:
             default: nvidia
             enum:
               - value: nvidia
-                description: NVIDIA (NVENC) — requires NVIDIA host drivers
+                description: NVIDIA (NVENC) — requires host NVIDIA drivers + nvidia-driver-vol
               - value: amd
                 description: AMD (AMF / VAAPI) — uses /dev/dri
               - value: intel
                 description: Intel (QuickSync / VAAPI) — uses /dev/dri
-              - value: software
-                description: Software encoding — no GPU required (high CPU load)
 
         - variable: nvidiaVisibleDevices
           label: NVIDIA Visible Devices
@@ -108,106 +147,6 @@ questions:
             default: all
             show_if: [["gpuVendor", "=", "nvidia"]]
 
-  # ─── Network Configuration ────────────────────────────────────────────────
-
-  - variable: network
-    group: Network Configuration
-    label: Network Configuration
-    schema:
-      type: dict
-      attrs:
-        - variable: hostNetwork
-          label: Use Host Networking
-          description: >
-            Run the container in the host network namespace. This is strongly
-            recommended — it avoids NAT on the UDP streaming ports, gives the
-            lowest possible latency, and lets mDNS discovery work without
-            extra configuration.
-          schema:
-            type: boolean
-            default: true
-
-        - variable: webPort
-          label: Wolf Web UI Port
-          description: >
-            HTTP port for the Wolf management web interface (pairing, logs,
-            app management). Also used by the TrueNAS portal link.
-          schema:
-            type: int
-            default: 47990
-            min: 1024
-            max: 65535
-
-        - variable: httpsPort
-          label: HTTPS Port (Moonlight discovery)
-          description: TCP port used by Moonlight for encrypted discovery. Default 47984.
-          schema:
-            type: int
-            default: 47984
-            min: 1024
-            max: 65535
-            show_if: [["hostNetwork", "=", false]]
-
-        - variable: httpPort
-          label: HTTP Port (Moonlight discovery)
-          description: TCP port used by Moonlight for plain discovery. Default 47989.
-          schema:
-            type: int
-            default: 47989
-            min: 1024
-            max: 65535
-            show_if: [["hostNetwork", "=", false]]
-
-        - variable: rtspPort
-          label: RTSP Port
-          description: TCP/UDP port for RTSP session negotiation. Default 48010.
-          schema:
-            type: int
-            default: 48010
-            min: 1024
-            max: 65535
-            show_if: [["hostNetwork", "=", false]]
-
-        - variable: videoPort
-          label: Video UDP Port
-          description: Primary UDP port for video stream data. Default 47998.
-          schema:
-            type: int
-            default: 47998
-            min: 1024
-            max: 65535
-            show_if: [["hostNetwork", "=", false]]
-
-        - variable: controlPort
-          label: Control UDP Port (1)
-          description: UDP port for stream control messages. Default 47999.
-          schema:
-            type: int
-            default: 47999
-            min: 1024
-            max: 65535
-            show_if: [["hostNetwork", "=", false]]
-
-        - variable: audioPort
-          label: Audio UDP Port
-          description: UDP port for audio stream data. Default 48000.
-          schema:
-            type: int
-            default: 48000
-            min: 1024
-            max: 65535
-            show_if: [["hostNetwork", "=", false]]
-
-        - variable: controlPort2
-          label: Control UDP Port (2)
-          description: Secondary UDP control port. Default 48002.
-          schema:
-            type: int
-            default: 48002
-            min: 1024
-            max: 65535
-            show_if: [["hostNetwork", "=", false]]
-
   # ─── Storage Configuration ────────────────────────────────────────────────
 
   - variable: storage
@@ -216,11 +155,11 @@ questions:
     schema:
       type: dict
       attrs:
-        - variable: wolfConfig
-          label: Wolf Configuration Storage
+        - variable: cfg
+          label: Wolf Configuration (/etc/wolf/cfg)
           description: >
-            Where Wolf stores its configuration: TLS certificates, paired
-            client records, and app definitions (config.toml).
+            config.toml, TLS certificates, and paired Moonlight client records.
+            Losing this volume requires re-pairing all clients.
           schema:
             type: dict
             attrs:
@@ -231,10 +170,9 @@ questions:
                   default: ixVolume
                   enum:
                     - value: ixVolume
-                      description: iX Volume (recommended — managed by TrueNAS)
+                      description: iX Volume (recommended)
                     - value: hostPath
-                      description: Host Path (map an existing directory)
-
+                      description: Host Path
               - variable: ixVolumeConfig
                 label: iX Volume Configuration
                 schema:
@@ -245,13 +183,11 @@ questions:
                   attrs:
                     - variable: datasetName
                       label: Dataset Name
-                      description: Name of the TrueNAS dataset to create for Wolf config.
                       schema:
                         type: string
                         required: true
-                        default: wolf-config
+                        default: wolf-cfg
                         immutable: true
-
               - variable: hostPathConfig
                 label: Host Path Configuration
                 schema:
@@ -260,7 +196,135 @@ questions:
                   attrs:
                     - variable: hostPath
                       label: Host Path
-                      description: Absolute path on the TrueNAS host for Wolf configuration.
+                      schema:
+                        type: hostpath
+                        required: true
+
+        - variable: steam
+          label: Steam Data (/etc/wolf/steam)
+          description: Steam library metadata and per-app persistent state.
+          schema:
+            type: dict
+            attrs:
+              - variable: type
+                label: Storage Type
+                schema:
+                  type: string
+                  default: ixVolume
+                  enum:
+                    - value: ixVolume
+                      description: iX Volume (recommended)
+                    - value: hostPath
+                      description: Host Path
+              - variable: ixVolumeConfig
+                label: iX Volume Configuration
+                schema:
+                  type: dict
+                  show_if: [["type", "=", "ixVolume"]]
+                  $ref:
+                    - "normalize/ixVolume"
+                  attrs:
+                    - variable: datasetName
+                      label: Dataset Name
+                      schema:
+                        type: string
+                        required: true
+                        default: wolf-steam
+                        immutable: true
+              - variable: hostPathConfig
+                label: Host Path Configuration
+                schema:
+                  type: dict
+                  show_if: [["type", "=", "hostPath"]]
+                  attrs:
+                    - variable: hostPath
+                      label: Host Path
+                      schema:
+                        type: hostpath
+                        required: true
+
+        - variable: wolfDen
+          label: Wolf Den Data (/app/wolf-den)
+          description: Wolf Den session database and user settings.
+          schema:
+            type: dict
+            attrs:
+              - variable: type
+                label: Storage Type
+                schema:
+                  type: string
+                  default: ixVolume
+                  enum:
+                    - value: ixVolume
+                      description: iX Volume (recommended)
+                    - value: hostPath
+                      description: Host Path
+              - variable: ixVolumeConfig
+                label: iX Volume Configuration
+                schema:
+                  type: dict
+                  show_if: [["type", "=", "ixVolume"]]
+                  $ref:
+                    - "normalize/ixVolume"
+                  attrs:
+                    - variable: datasetName
+                      label: Dataset Name
+                      schema:
+                        type: string
+                        required: true
+                        default: wolf-den
+                        immutable: true
+              - variable: hostPathConfig
+                label: Host Path Configuration
+                schema:
+                  type: dict
+                  show_if: [["type", "=", "hostPath"]]
+                  attrs:
+                    - variable: hostPath
+                      label: Host Path
+                      schema:
+                        type: hostpath
+                        required: true
+
+        - variable: covers
+          label: Cover Art (/etc/wolf/covers)
+          description: Game cover images displayed in Wolf Den and Moonlight clients.
+          schema:
+            type: dict
+            attrs:
+              - variable: type
+                label: Storage Type
+                schema:
+                  type: string
+                  default: ixVolume
+                  enum:
+                    - value: ixVolume
+                      description: iX Volume (recommended)
+                    - value: hostPath
+                      description: Host Path
+              - variable: ixVolumeConfig
+                label: iX Volume Configuration
+                schema:
+                  type: dict
+                  show_if: [["type", "=", "ixVolume"]]
+                  $ref:
+                    - "normalize/ixVolume"
+                  attrs:
+                    - variable: datasetName
+                      label: Dataset Name
+                      schema:
+                        type: string
+                        required: true
+                        default: wolf-covers
+                        immutable: true
+              - variable: hostPathConfig
+                label: Host Path Configuration
+                schema:
+                  type: dict
+                  show_if: [["type", "=", "hostPath"]]
+                  attrs:
+                    - variable: hostPath
+                      label: Host Path
                       schema:
                         type: hostpath
                         required: true
@@ -273,20 +337,9 @@ questions:
     schema:
       type: dict
       attrs:
-        - variable: exposeDockerSocket
-          label: Expose Docker Socket
-          description: >
-            Give Wolf access to the Docker socket so it can start and stop
-            per-session game containers. Required for Wolf's default app
-            definitions. Disable only if you are using a custom setup that
-            does not need container management.
-          schema:
-            type: boolean
-            default: true
-
         - variable: additionalEnv
           label: Additional Environment Variables
-          description: Extra environment variables passed to the Wolf container.
+          description: Extra environment variables passed to the Wolf container only.
           schema:
             type: list
             default: []
